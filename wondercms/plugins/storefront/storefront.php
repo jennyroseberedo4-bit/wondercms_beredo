@@ -145,7 +145,7 @@ $storefrontAction = $_POST['storefront_action'] ?? $_GET['storefront_action'] ??
 // True when the visitor is allowed to manage products/orders/users: either logged into the
 // WonderCMS backend, or logged into the store as a storefront account with role "admin".
 $storefrontIsAdmin = $Wcms->loggedIn || ((($_SESSION['storefront_role'] ?? '') === 'admin') && !empty($_SESSION['storefront_user']));
-$storefrontRoutes = ['store', 'store-login', 'store-register', 'store-cart', 'store-account', 'store-success', 'store-admin', 'coffee-blog', 'coffee-photo', 'coffee-education', 'coffee-about'];
+$storefrontRoutes = ['store', 'store-login', 'store-register', 'store-cart', 'store-account', 'store-success', 'store-receipt', 'store-admin', 'coffee-blog', 'coffee-photo', 'coffee-education', 'coffee-about'];
 if (in_array($Wcms->currentPage, $storefrontRoutes, true)) {
     $Wcms->currentPageExists = true;
     $Wcms->headerResponse = 'HTTP/1.0 200 OK';
@@ -285,7 +285,7 @@ if ($storefrontAction === 'checkout' && $_SERVER['REQUEST_METHOD'] === 'POST' &&
     }
     if ($items) {
         $storefrontData['orders'][] = [
-            'id' => 'ORD-' . strtoupper(bin2hex(random_bytes(4))),
+            'id' => $newOrderId = 'ORD-' . strtoupper(bin2hex(random_bytes(4))),
             'email' => $customerEmail,
             'customer_name' => $customerName,
             'phone' => $customerPhone,
@@ -298,6 +298,7 @@ if ($storefrontAction === 'checkout' && $_SERVER['REQUEST_METHOD'] === 'POST' &&
         ];
         $storefrontSave($storefrontData);
         unset($_SESSION['storefront_cart']);
+        $_SESSION['storefront_my_orders'][] = $newOrderId;
         $_SESSION['storefront_order_confirmation'] = [
             'id' => $storefrontData['orders'][array_key_last($storefrontData['orders'])]['id'],
             'total' => round($total, 2),
@@ -442,8 +443,70 @@ $storefrontPage = static function (string $page) use ($storefrontData, $storefro
         }
         $html .= '</div>';
         $html .= '<div class="visit-strip reveal"><div><h3>Open daily</h3><p>7:00 AM – 10:00 PM</p></div><div><h3>Kitchen</h3><p>Breakfast until 11:00 AM</p></div><div><h3>Delivery</h3><p>Within the city, 30–45 minutes</p></div></div>';
+    } elseif ($page === 'store-receipt') {
+        $receiptId = trim((string)($_GET['order'] ?? ''));
+        $receiptOrder = null;
+        foreach ($storefrontData['orders'] as $candidateOrder) {
+            if (($candidateOrder['id'] ?? '') === $receiptId) { $receiptOrder = $candidateOrder; break; }
+        }
+        // Allowed: admins, the customer who owns the order, or the guest who just placed it in this session.
+        $receiptAllowed = $receiptOrder !== null && (
+            $storefrontIsAdmin
+            || ($userEmail !== '' && strtolower(trim($receiptOrder['email'] ?? '')) === $userEmail)
+            || in_array($receiptId, (array)($_SESSION['storefront_my_orders'] ?? []), true)
+        );
+        if (!$receiptAllowed) {
+            $html .= '<div class="store-panel reveal"><p class="store-kicker">Receipt</p><h1>Receipt not available</h1><p>We could not find this order, or it belongs to another account. Sign in with the email you used when ordering.</p><p><a class="store-button" href="' . Wcms::url('store-login') . '">Sign in</a></p></div>';
+        } else {
+            $receiptBaseCss = <<<'CSS'
+.receipt-sheet{max-width:720px;margin:0 auto;padding:2.2rem clamp(1.2rem,4vw,2.6rem);background:#fffaf2;color:#2b1712;border-radius:14px;font-family:"Poppins","Helvetica Neue",Arial,sans-serif;box-shadow:0 18px 45px rgba(0,0,0,.28);text-align:left;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.receipt-sheet *{color:inherit;box-sizing:border-box}
+.receipt-sheet h1,.receipt-sheet h2,.receipt-sheet p{margin:0;padding:0}
+.receipt-head{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;padding-bottom:1.2rem;border-bottom:2px solid #2b1712}
+.receipt-head h1{font-family:"Fraunces",Georgia,serif;font-size:1.6rem;line-height:1.15;font-weight:600}
+.receipt-head p{font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;opacity:.65;margin-top:.35rem}
+.receipt-meta{text-align:right;font-size:.82rem;line-height:1.6}
+.receipt-meta strong{display:block;font-size:1rem}
+.receipt-parties{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1.2rem;padding:1.3rem 0}
+.receipt-parties h2{font-family:"Poppins",Arial,sans-serif;font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;opacity:.6;margin-bottom:.4rem;font-weight:600}
+.receipt-parties p{font-size:.88rem;line-height:1.6;overflow-wrap:anywhere}
+.receipt-table{width:100%;border-collapse:collapse;font-size:.88rem}
+.receipt-table th{text-align:left;font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;padding:.6rem .4rem;border-bottom:1px solid #2b1712;font-weight:600}
+.receipt-table td{padding:.65rem .4rem;border-bottom:1px solid rgba(43,23,18,.14)}
+.receipt-table .num{text-align:right;white-space:nowrap}
+.receipt-total{display:flex;justify-content:space-between;align-items:baseline;margin-top:1.1rem;padding-top:1rem;border-top:2px solid #2b1712;font-size:.95rem}
+.receipt-total strong{font-family:"Fraunces",Georgia,serif;font-size:1.5rem}
+.receipt-foot{margin-top:1.6rem;font-size:.78rem;opacity:.7;text-align:center;line-height:1.6}
+body.receipt-standalone{margin:0;padding:2rem 1rem;background:#efe3d0}
+@media print{body.receipt-standalone{background:#fff;padding:0}.receipt-sheet{box-shadow:none;border-radius:0}}
+CSS;
+            $receiptPageCss = <<<'CSS'
+.receipt-actions{display:flex;flex-wrap:wrap;align-items:center;gap:.7rem;max-width:720px;margin:0 auto 1.2rem}
+.receipt-back{color:#f6c879;font-size:.85rem;border-bottom:0;margin-left:auto}
+@media print{body *{visibility:hidden!important}.receipt-sheet,.receipt-sheet *{visibility:visible!important}.receipt-sheet{position:absolute;left:0;top:0;width:100%;max-width:none;margin:0;box-shadow:none;border-radius:0}}
+CSS;
+
+            $receiptRows = '';
+            foreach (($receiptOrder['items'] ?? []) as $receiptItem) {
+                $receiptQty = (int)($receiptItem['quantity'] ?? 0);
+                $receiptUnit = (float)($receiptItem['price'] ?? 0);
+                $receiptRows .= '<tr><td>' . $storefrontEsc($receiptItem['name'] ?? '') . '</td><td class="num">' . $receiptQty . '</td><td class="num">' . $storefrontMoney($receiptUnit) . '</td><td class="num">' . $storefrontMoney($receiptQty * $receiptUnit) . '</td></tr>';
+            }
+            $receiptDate = date('F j, Y · g:i A', strtotime($receiptOrder['created'] ?? 'now'));
+            $accountUrl = $userEmail !== '' ? Wcms::url('store-account') : Wcms::url('store');
+
+            $html .= '<style id="receiptStyles">' . $receiptBaseCss . '</style><style>' . $receiptPageCss . '</style>';
+            $html .= '<div class="receipt-actions reveal"><button type="button" class="store-button" onclick="printReceipt()">Print / Save as PDF</button><button type="button" class="store-button" onclick="downloadReceiptHtml()">Download HTML</button><a class="receipt-back" href="' . $accountUrl . '">&larr; Back</a></div>';
+            $html .= '<article class="receipt-sheet" id="receiptSheet" data-order="' . $storefrontEsc($receiptOrder['id']) . '">';
+            $html .= '<header class="receipt-head"><div><h1>' . $storefrontEsc($Wcms->get('config', 'siteTitle')) . '</h1><p>Order receipt</p></div><div class="receipt-meta"><strong>' . $storefrontEsc($receiptOrder['id']) . '</strong><span>' . $storefrontEsc($receiptDate) . '</span></div></header>';
+            $html .= '<section class="receipt-parties"><div><h2>Billed to</h2><p>' . $storefrontEsc($receiptOrder['customer_name'] ?? '') . '<br>' . $storefrontEsc($receiptOrder['email'] ?? '') . '<br>' . $storefrontEsc($receiptOrder['phone'] ?? '') . '</p></div><div><h2>Delivery address</h2><p>' . nl2br($storefrontEsc($receiptOrder['address'] ?? '')) . '</p></div><div><h2>Payment</h2><p>' . $storefrontEsc($receiptOrder['payment_method'] ?? 'Payment pending') . '<br>Status: ' . $storefrontEsc($receiptOrder['status'] ?? 'Received') . '</p></div></section>';
+            $html .= '<table class="receipt-table"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead><tbody>' . $receiptRows . '</tbody></table>';
+            $html .= '<div class="receipt-total"><span>Total</span><strong>' . $storefrontMoney($receiptOrder['total'] ?? 0) . '</strong></div>';
+            $html .= '<p class="receipt-foot">Thank you for ordering with ' . $storefrontEsc($Wcms->get('config', 'siteTitle')) . '. Please keep this receipt for your records.</p>';
+            $html .= '</article>';
+        }
     } elseif ($page === 'store-success') {
-        $html .= '<div class="store-panel order-success reveal"><p class="store-kicker">Order received</p><h1>Thank you for your order.</h1>' . ($confirmation ? '<p>Order number: <strong>' . $storefrontEsc($confirmation['id']) . '</strong></p><p>Total: <strong>' . $storefrontMoney($confirmation['total']) . '</strong><br>Payment: <strong>' . $storefrontEsc($confirmation['payment_method']) . '</strong></p>' : '<p>Order details are no longer available in this session.</p>') . '<p><a class="store-button" href="' . Wcms::url('store') . '">Continue shopping</a></p></div>';
+        $html .= '<div class="store-panel order-success reveal"><p class="store-kicker">Order received</p><h1>Thank you for your order.</h1>' . ($confirmation ? '<p>Order number: <strong>' . $storefrontEsc($confirmation['id']) . '</strong></p><p>Total: <strong>' . $storefrontMoney($confirmation['total']) . '</strong><br>Payment: <strong>' . $storefrontEsc($confirmation['payment_method']) . '</strong></p>' : '<p>Order details are no longer available in this session.</p>') . ($confirmation ? '<p><a class="store-button" href="' . Wcms::url('store-receipt') . '?order=' . urlencode($confirmation['id']) . '">View receipt / Download PDF</a></p>' : '') . '<p><a class="store-button" href="' . Wcms::url('store') . '">Continue shopping</a></p></div>';
     } elseif ($page === 'store-cart') {
         $total = 0;
         $itemCount = 0;
@@ -480,7 +543,7 @@ $storefrontPage = static function (string $page) use ($storefrontData, $storefro
                 $html .= '<p>Join the WonderBrew Club — free, no charge. You\'ll receive updates on promos and new menu items.</p><form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="subscribe"><button class="store-button" type="submit">Subscribe (Free)</button></form>';
             }
             $html .= '</div>';
-            $found = false; $customerOrderCount = 0; foreach (array_reverse($storefrontData['orders']) as $order) if ($order['email'] === $userEmail) { $found = true; $customerOrderCount++; $html .= '<div class="store-line"><span>' . $storefrontEsc($order['id']) . ' · ' . $storefrontEsc($order['status']) . ' · ' . $storefrontEsc($order['payment_method'] ?? 'Payment pending') . '</span><strong>' . $storefrontMoney($order['total']) . '</strong></div>'; }
+            $found = false; $customerOrderCount = 0; foreach (array_reverse($storefrontData['orders']) as $order) if ($order['email'] === $userEmail) { $found = true; $customerOrderCount++; $html .= '<div class="store-line"><span>' . $storefrontEsc($order['id']) . ' · ' . $storefrontEsc($order['status']) . ' · ' . $storefrontEsc($order['payment_method'] ?? 'Payment pending') . '</span><span class="store-line-right"><a class="receipt-link" href="' . Wcms::url('store-receipt') . '?order=' . urlencode($order['id']) . '">Receipt</a><strong>' . $storefrontMoney($order['total']) . '</strong></span></div>'; }
             if (!$found) $html .= '<p>No orders yet.</p>'; else $html = str_replace('<h1>Your orders</h1>', '<h1>Your orders <span class="order-count">' . $customerOrderCount . '</span></h1>', $html);
             $html .= '<p><a href="' . Wcms::url('storefront?storefront_action=logout') . '">Sign out</a></p>';
         }
@@ -667,7 +730,7 @@ $storefrontPage = static function (string $page) use ($storefrontData, $storefro
         $html .= '<div class="store-panel"><p class="store-kicker">Catalog</p><h1>Products and orders</h1><p class="order-summary">Total orders received: <strong>' . $totalOrders . '</strong></p><form class="store-admin-form" method="post"><input type="hidden" name="token" value="' . $wcmsToken . '"><input type="hidden" name="storefront_token" value="' . $storeToken . '"><input type="hidden" name="storefront_action" value="save_product"><input name="product_name" placeholder="Product name" required><input name="product_price" type="number" min="100" step="0.01" placeholder="Price in PHP (minimum ₱100)" required><input name="product_stock" type="number" placeholder="Stock" required><input name="product_description" placeholder="Short description"><button class="store-button" type="submit">Add product</button></form>';
         $html .= '<h2 id="storeAdminCatalog">Products (' . count($products) . ')</h2>';
         foreach ($products as $product) $html .= '<div class="store-line"><span>' . $storefrontEsc($product['name']) . ' · ' . $storefrontMoney($product['price']) . ' · ' . (int)$product['stock'] . ' in stock</span><form method="post"><input type="hidden" name="token" value="' . $wcmsToken . '"><input type="hidden" name="storefront_token" value="' . $storeToken . '"><input type="hidden" name="storefront_action" value="delete_product"><input type="hidden" name="product_id" value="' . $storefrontEsc($product['id']) . '"><button class="store-link-button" type="submit">Delete</button></form></div>';
-        $html .= '<h2 id="storeAdminOrders">Orders (' . $totalOrders . ')</h2>'; foreach (array_reverse($storefrontData['orders']) as $order) $html .= '<div class="store-line"><span>' . $storefrontEsc($order['id']) . ' · ' . $storefrontEsc($order['email']) . ' · ' . $storefrontEsc($order['payment_method'] ?? 'Payment pending') . '</span><strong>' . $storefrontMoney($order['total']) . '</strong></div>';
+        $html .= '<h2 id="storeAdminOrders">Orders (' . $totalOrders . ')</h2>'; foreach (array_reverse($storefrontData['orders']) as $order) $html .= '<div class="store-line"><span>' . $storefrontEsc($order['id']) . ' · ' . $storefrontEsc($order['email']) . ' · ' . $storefrontEsc($order['payment_method'] ?? 'Payment pending') . '</span><span class="store-line-right"><a class="receipt-link" href="' . Wcms::url('store-receipt') . '?order=' . urlencode($order['id']) . '">Receipt</a><strong>' . $storefrontMoney($order['total']) . '</strong></span></div>';
         $html .= '<h2 id="storeAdminAccounts">Accounts &amp; WonderBrew Club (' . count($storefrontData['users']) . ' accounts · ' . $subscriberCount . ' free subscribers)</h2>';
         foreach ($storefrontData['users'] as $storeUser) {
             $isSub = !empty($storeUser['subscribed']);
@@ -683,49 +746,24 @@ $storefrontPage = static function (string $page) use ($storefrontData, $storefro
         foreach ($products as $product) { if ($product['id'] === 'mocha') { $featuredProduct = $product; break; } }
         if (!$featuredProduct && $products) $featuredProduct = $products[0];
 
-        // Four small round shortcuts under the call to action.
-        $heroPicks = [];
-        foreach ($products as $product) {
-            if ($featuredProduct && $product['id'] === $featuredProduct['id']) continue;
-            $heroPicks[] = $product;
-            if (count($heroPicks) === 4) break;
-        }
-
         $html .= '<section class="owl-hero">';
         $html .= '<div class="owl-hero-grid">';
 
         $html .= '<div class="owl-hero-copy">';
-        $html .= '<h1>Your Perfect<br>Cup, Every Time</h1>';
-        $html .= '<p class="owl-hero-sub">Hand-selected beans. Roasted to perfection.<br>Delivered to your door.</p>';
-        $html .= '<a class="owl-cta" href="#store-grid-start">Shop Coffee</a>';
-        if ($heroPicks) {
-            $html .= '<div class="owl-thumbs">';
-            foreach ($heroPicks as $pick) {
-                $html .= '<a class="owl-thumb" href="#product-' . $storefrontEsc($pick['id']) . '" title="' . $storefrontEsc($pick['name']) . '"><img src="' . $storefrontEsc($pick['image'] ?? '') . '" alt="' . $storefrontEsc($pick['name']) . '" loading="lazy"></a>';
-            }
-            $html .= '</div>';
-        }
+        $html .= '<h1>Enjoy The Most<br><span class="owl-accent">Delicious Coffee</span></h1>';
+        $html .= '<p class="owl-hero-sub">Start your day with coffee, enhancing productivity and mood. Its invigorating aroma sets a focused tone for tackling tasks with renewed energy and positivity.</p>';
+        $html .= '<div class="owl-cta-row"><a class="owl-cta" href="#store-grid-start">Explore &nearr;</a><a class="owl-cta owl-cta-outline" href="' . Wcms::url('store-cart') . '">Order Coffee &#128722;</a></div>';
         $html .= '</div>';
 
         $html .= '<div class="owl-hero-visual">';
-        $html .= '<span class="owl-disc" aria-hidden="true"></span>';
         if ($featuredProduct) {
             $html .= '<img class="owl-hero-drink" src="' . $storefrontEsc($featuredProduct['image'] ?? '') . '" alt="' . $storefrontEsc($featuredProduct['name']) . '">';
         }
-        $beanImage = 'https://images.unsplash.com/photo-1447933601403-0c6688de566e?w=200&q=80';
-        foreach (['owl-bean-1', 'owl-bean-2', 'owl-bean-3', 'owl-bean-4'] as $beanClass) {
-            $html .= '<span class="owl-bean ' . $beanClass . '" aria-hidden="true"><img src="' . $beanImage . '" alt="" loading="lazy"></span>';
-        }
+        $html .= '<div class="owl-badge owl-badge-top"><span class="owl-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</span><p>4.9 out of 5 overall star rating for all local business</p></div>';
+        $html .= '<div class="owl-badge owl-badge-bottom"><span class="owl-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</span><p>4.9 out of 5 overall star rating for all local business</p></div>';
         $html .= '</div>';
 
         $html .= '</div>'; // owl-hero-grid
-
-        $html .= '<ul class="owl-promises">'
-            . '<li><span aria-hidden="true">🌱</span>Sustainably sourced</li>'
-            . '<li><span aria-hidden="true">🔥</span>Freshly roasted</li>'
-            . '<li><span aria-hidden="true">☕</span>Tailored for you</li>'
-            . '</ul>';
-
         $html .= '</section>';
 
         $html .= '<div class="store-grid" id="store-grid-start">';
@@ -736,7 +774,7 @@ $storefrontPage = static function (string $page) use ($storefrontData, $storefro
                 $html .= '<h2 class="store-category-title">' . $storefrontEsc($activeCategory) . '</h2>';
             }
             $image = $storefrontEsc($product['image'] ?? '');
-            $html .= '<article class="store-product" id="product-' . $storefrontEsc($product['id']) . '"><button class="store-image-button" type="button" onclick="openProductZoom(this)" data-name="' . $storefrontEsc($product['name']) . '" data-image="' . $image . '" aria-label="Zoom ' . $storefrontEsc($product['name']) . '"><img src="' . $image . '" alt="' . $storefrontEsc($product['name']) . '" loading="lazy"></button><span class="store-product-number">' . $storefrontEsc(strtoupper(substr($product['name'], 0, 1))) . '</span><h2>' . $storefrontEsc($product['name']) . '</h2><p>' . $storefrontEsc($product['description']) . '</p><div class="store-product-foot"><strong>' . $storefrontMoney($product['price']) . '</strong>' . ((int)$product['stock'] > 0 ? '<form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="add"><input type="hidden" name="product_id" value="' . $storefrontEsc($product['id']) . '"><button class="store-button add-to-cart-btn" type="submit"><span class="cart-icon" aria-hidden="true">🛒</span>Add to cart</button></form>' : '<span class="sold-out-badge">Sold out</span>') . '</div></article>';
+            $html .= '<article class="store-product" id="product-' . $storefrontEsc($product['id']) . '"><button class="store-image-button" type="button" onclick="openProductZoom(this)" data-name="' . $storefrontEsc($product['name']) . '" data-image="' . $image . '" aria-label="Zoom ' . $storefrontEsc($product['name']) . '"><img src="' . $image . '" alt="' . $storefrontEsc($product['name']) . '" loading="lazy"></button><span class="store-product-number">' . $storefrontEsc(strtoupper(substr($product['name'], 0, 1))) . '</span><h2>' . $storefrontEsc($product['name']) . '</h2><p>' . $storefrontEsc($product['description']) . '</p><p class="store-rating"><span class="owl-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</span> (4.9)</p><div class="store-product-foot"><strong>' . $storefrontMoney($product['price']) . '</strong>' . ((int)$product['stock'] > 0 ? '<form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="add"><input type="hidden" name="product_id" value="' . $storefrontEsc($product['id']) . '"><button class="store-button add-to-cart-btn" type="submit"><span class="cart-icon" aria-hidden="true">🛒</span>Add to cart</button></form>' : '<span class="sold-out-badge">Sold out</span>') . '</div></article>';
         }
         $html .= '<div id="productZoom" class="product-zoom" onclick="closeProductZoom(event)"><div class="product-zoom-content"><button type="button" onclick="closeProductZoom(event)" aria-label="Close">&times;</button><img id="productZoomImage" src="" alt=""><div class="zoom-controls"><button type="button" onclick="changeProductZoom(-.2,event)" aria-label="Zoom out">-</button><button type="button" onclick="changeProductZoom(.2,event)" aria-label="Zoom in">+</button></div><h2 id="productZoomName"></h2></div></div>';
         $html .= '</div>';
@@ -753,7 +791,7 @@ $Wcms->addListener('menu', static function (array $args) use ($Wcms): array {
 });
 
 $Wcms->addListener('page', static function (array $args) use ($storefrontPage, $Wcms): array {
-    if (!in_array($Wcms->currentPage, ['store', 'store-login', 'store-register', 'store-cart', 'store-account', 'store-success', 'store-admin', 'coffee-blog', 'coffee-photo', 'coffee-education', 'coffee-about'], true)) return $args;
+    if (!in_array($Wcms->currentPage, ['store', 'store-login', 'store-register', 'store-cart', 'store-account', 'store-success', 'store-receipt', 'store-admin', 'coffee-blog', 'coffee-photo', 'coffee-education', 'coffee-about'], true)) return $args;
     if ($args[1] === 'title') $args[0] = $Wcms->get('config', 'siteTitle') . ' - Shop';
     if ($args[1] === 'description') $args[0] = 'Browse products and place an order.';
     if ($args[1] === 'keywords') $args[0] = 'shop, products, orders';
@@ -769,47 +807,36 @@ $Wcms->addListener('css', static function (array $args): array {
 
 $Wcms->addListener('css', static function (array $args): array {
     $args[0] .= '<style>'
-        . '.owl-hero{position:relative;margin:0 0 2.5rem;padding:clamp(2rem,4.5vw,3.6rem) clamp(1.4rem,4vw,3.4rem) 1.6rem;background:#1c0e08;border:1px solid rgba(247,218,181,.12);border-radius:26px;overflow:hidden}'
-        . '.owl-hero-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:center;gap:clamp(1.5rem,4vw,3rem);min-height:400px}'
-        . '.owl-hero-copy{position:relative;z-index:2}'
-        . '.owl-hero-copy h1{font-family:"Poppins",-apple-system,sans-serif;font-weight:700;font-size:clamp(2.3rem,5.2vw,4rem);line-height:1.08;letter-spacing:-.015em;color:#f6d6a6;margin:0 0 1rem}'
-        . '.owl-hero-sub{font-size:clamp(.92rem,1.4vw,1.05rem);line-height:1.6;color:#e7cdaa;opacity:.82;margin:0 0 1.6rem;max-width:30ch}'
-        . '.owl-cta{display:inline-block;background:#6d3b1c;color:#ffe6c4!important;border:0;border-radius:999px;padding:.85rem 1.9rem;font-size:.95rem;font-weight:600;text-decoration:none;transition:background .18s ease,transform .18s ease}'
-        . '.owl-cta:hover{background:#82481f;color:#fff3e0!important;transform:translateY(-1px);border-bottom:0}'
-        . '.owl-cta:focus-visible{outline:2px solid #f6c879;outline-offset:3px}'
-        . '.owl-thumbs{display:flex;gap:1rem;margin-top:2.2rem;flex-wrap:wrap}'
-        . '.owl-thumb{width:68px;height:68px;border-radius:50%;overflow:hidden;border:0;background:#7a441f;display:block;transition:transform .2s ease,box-shadow .2s ease}'
-        . '.owl-thumb img{width:100%;height:100%;object-fit:cover;display:block}'
-        . '.owl-thumb:hover{transform:translateY(-4px);box-shadow:0 12px 22px rgba(0,0,0,.45);border-bottom:0}'
-        . '.owl-thumb:focus-visible{outline:2px solid #f6c879;outline-offset:3px}'
-        . '.owl-hero-visual{position:relative;display:flex;align-items:center;justify-content:center;min-height:360px}'
-        . '.owl-disc{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(360px,92%);aspect-ratio:1;border-radius:50%;background:radial-gradient(circle at 32% 26%,#a05e2c 0%,#7c451f 55%,#5d3117 100%)}'
-        . '.owl-hero-drink{position:relative;z-index:2;width:min(300px,78%);aspect-ratio:3/4;object-fit:cover;border-radius:22px;box-shadow:0 26px 48px rgba(0,0,0,.55)}'
-        . '.owl-bean{position:absolute;z-index:3;border-radius:50%;overflow:hidden;box-shadow:0 10px 20px rgba(0,0,0,.5)}'
-        . '.owl-bean img{width:100%;height:100%;object-fit:cover;display:block}'
-        . '.owl-bean-1{width:66px;height:66px;top:8%;left:6%}'
-        . '.owl-bean-2{width:52px;height:52px;top:16%;right:4%}'
-        . '.owl-bean-3{width:40px;height:40px;top:44%;left:0}'
-        . '.owl-bean-4{width:34px;height:34px;bottom:14%;right:10%}'
-        . '.owl-promises{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.8rem 2rem;margin:2.4rem 0 0;padding:1.4rem 0 0;border-top:1px solid rgba(247,218,181,.14);list-style:none}'
-        . '.owl-promises li{display:flex;align-items:center;gap:.55rem;color:#f2c98f;font-size:.86rem;font-weight:600}'
-        . '.owl-promises span{font-size:1.05rem}'
-        . '@keyframes owlFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}'
-        . '.owl-hero-drink{animation:owlFloat 5s ease-in-out infinite}'
-        . '@media(prefers-reduced-motion:reduce){.owl-hero-drink{animation:none}}'
+        . '.owl-hero{position:relative;margin:0 0 2.5rem;padding:clamp(2rem,4.5vw,3.6rem) clamp(1.4rem,4vw,3.4rem);background:#1c0e08;border:1px solid rgba(247,218,181,.12);border-radius:26px;overflow:hidden}'
+        . '.owl-hero-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:center;gap:clamp(2rem,5vw,4rem);min-height:380px}'
+        . '.owl-hero-copy h1{font-family:"Fraunces",Georgia,serif;font-weight:700;font-size:clamp(2.4rem,5vw,3.6rem);line-height:1.1;color:#fff;margin:0 0 1.1rem}'
+        . '.owl-hero-copy h1 .owl-accent{color:#e2a86b}'
+        . '.owl-hero-sub{font-size:.95rem;line-height:1.7;color:#cbb79a;opacity:.9;margin:0 0 1.8rem;max-width:34ch}'
+        . '.owl-cta-row{display:flex;gap:.9rem;flex-wrap:wrap}'
+        . '.owl-cta{display:inline-block;background:#e2a86b;color:#241009!important;border:0;border-radius:8px;padding:.85rem 1.7rem;font-size:.85rem;font-weight:600;text-decoration:none;transition:filter .18s ease,transform .18s ease}'
+        . '.owl-cta:hover{filter:brightness(1.08);transform:translateY(-1px);border-bottom:0}'
+        . '.owl-cta-outline{background:transparent;color:#f1e2c8!important;border:1px solid rgba(241,226,200,.4)}'
+        . '.owl-cta-outline:hover{background:rgba(241,226,200,.08)}'
+        . '.owl-hero-visual{position:relative;display:flex;align-items:center;justify-content:center;min-height:340px}'
+        . '.owl-hero-drink{position:relative;z-index:1;width:min(320px,85%);object-fit:contain;filter:drop-shadow(0 30px 40px rgba(0,0,0,.55))}'
+        . '.owl-badge{position:absolute;z-index:2;display:flex;flex-direction:column;gap:.3rem;background:#2b1710;border:1px solid rgba(247,218,181,.2);border-radius:14px;padding:.7rem .95rem;max-width:190px;box-shadow:0 12px 30px rgba(0,0,0,.4)}'
+        . '.owl-badge p{margin:0;font-size:.68rem;line-height:1.4;color:#e8c493;opacity:.85}'
+        . '.owl-stars{color:#e2a86b;letter-spacing:.1em;font-size:.85rem}'
+        . '.owl-badge-top{top:0;right:4%}'
+        . '.owl-badge-bottom{bottom:2%;left:0}'
         . '@media(max-width:820px){'
         . '.owl-hero-grid{grid-template-columns:1fr;text-align:center;min-height:auto}'
-        . '.owl-hero-copy{order:2}.owl-hero-visual{order:1;min-height:300px}'
         . '.owl-hero-sub{margin-left:auto;margin-right:auto}'
-        . '.owl-thumbs{justify-content:center}'
-        . '.owl-promises{justify-content:center;gap:.8rem 1.4rem}'
+        . '.owl-cta-row{justify-content:center}'
+        . '.owl-hero-visual{min-height:280px;margin-top:1rem}'
+        . '.owl-badge{max-width:150px}'
         . '}'
         . '</style>';
     return $args;
 });
 
 $Wcms->addListener('css', static function (array $args): array {
-    $args[0] .= '<style>.store-category-title{grid-column:1/-1;margin:1.8rem 0 .2rem;color:#f6c879;border-bottom:1px solid rgba(247,218,181,.22);padding-bottom:.55rem;font-size:1.05rem;font-weight:600}.store-image-button{display:block;width:100%;height:170px;padding:0;border:0;background:none;cursor:zoom-in;overflow:hidden;border-radius:11px}.store-image-button img{width:100%;height:100%;object-fit:cover;transition:transform .35s ease}.store-image-button:hover img{transform:scale(1.08)}.store-product .store-button{line-height:2.3em!important;padding:0 .8em!important;font-size:.72rem!important;letter-spacing:.01em!important;border-radius:6px!important;display:inline-flex;align-items:center;gap:.4em}.cart-icon{font-size:.9em}.sold-out-badge{font-size:.78rem;color:#e8c493;opacity:.75;font-weight:500}.demo-login{margin:1rem 0;padding:.8rem 1rem;border:1px dashed rgba(247,218,181,.32);border-radius:9px;color:#f6d09b;font-size:.8rem;line-height:1.6}.checkout-form select{display:block;width:100%;padding:.75rem .85rem;border:1px solid rgba(247,218,181,.3);background:#2b1712;color:#fff;border-radius:7px;font-family:"Poppins",sans-serif;font-size:.9rem;margin-top:.35rem}.product-zoom{display:none;position:fixed;z-index:3000;inset:0;background:rgba(20,9,5,.88);align-items:center;justify-content:center;padding:1rem}.product-zoom.is-open{display:flex}.product-zoom-content{position:relative;max-width:850px;width:100%;text-align:center}.product-zoom-content img{max-width:100%;max-height:75vh;border-radius:12px;object-fit:contain;box-shadow:0 15px 50px #000;transition:transform .2s ease}.product-zoom-content h2{color:#f8dfbc;font-size:1.2rem}.product-zoom-content>button{position:absolute;right:0;top:-2.5rem;border:0;background:none;color:#fff;font-size:1.8rem;cursor:pointer}.zoom-controls{display:flex;justify-content:center;gap:.6rem;margin:.8rem}.zoom-controls button{width:2.3rem;height:2.3rem;border:0;border-radius:50%;background:#f6c879;color:#3a2118;font-size:1.2rem;font-weight:700;cursor:pointer}.basket-link{position:relative}.cart-count-badge{display:inline-flex;align-items:center;justify-content:center;min-width:1.15rem;height:1.15rem;padding:0 .3rem;margin-left:.35rem;background:#e46a6a;color:#fff;border-radius:999px;font-size:.62rem;font-weight:700;vertical-align:middle}@media(max-width:600px){.store-image-button{height:145px}.store-category-title{margin-top:1.3rem}}</style>';
+    $args[0] .= '<style>.store-category-title{grid-column:1/-1;margin:1.8rem 0 .2rem;color:#f6c879;border-bottom:1px solid rgba(247,218,181,.22);padding-bottom:.55rem;font-size:1.05rem;font-weight:600}.store-image-button{display:block;width:100%;height:170px;padding:0;border:0;background:none;cursor:zoom-in;overflow:hidden;border-radius:11px}.store-image-button img{width:100%;height:100%;object-fit:cover;transition:transform .35s ease}.store-image-button:hover img{transform:scale(1.08)}.store-product .store-button{line-height:2.3em!important;padding:0 .8em!important;font-size:.72rem!important;letter-spacing:.01em!important;border-radius:6px!important;display:inline-flex;align-items:center;gap:.4em}.cart-icon{font-size:.9em}.sold-out-badge{font-size:.78rem;color:#e8c493;opacity:.75;font-weight:500}.demo-login{margin:1rem 0;padding:.8rem 1rem;border:1px dashed rgba(247,218,181,.32);border-radius:9px;color:#f6d09b;font-size:.8rem;line-height:1.6}.checkout-form select{display:block;width:100%;padding:.75rem .85rem;border:1px solid rgba(247,218,181,.3);background:#2b1712;color:#fff;border-radius:7px;font-family:"Poppins",sans-serif;font-size:.9rem;margin-top:.35rem}.product-zoom{display:none;position:fixed;z-index:3000;inset:0;background:rgba(20,9,5,.88);align-items:center;justify-content:center;padding:1rem}.product-zoom.is-open{display:flex}.product-zoom-content{position:relative;max-width:850px;width:100%;text-align:center}.product-zoom-content img{max-width:100%;max-height:75vh;border-radius:12px;object-fit:contain;box-shadow:0 15px 50px #000;transition:transform .2s ease}.product-zoom-content h2{color:#f8dfbc;font-size:1.2rem}.product-zoom-content>button{position:absolute;right:0;top:-2.5rem;border:0;background:none;color:#fff;font-size:1.8rem;cursor:pointer}.zoom-controls{display:flex;justify-content:center;gap:.6rem;margin:.8rem}.zoom-controls button{width:2.3rem;height:2.3rem;border:0;border-radius:50%;background:#f6c879;color:#3a2118;font-size:1.2rem;font-weight:700;cursor:pointer}.basket-link{position:relative}.cart-count-badge{display:inline-flex;align-items:center;justify-content:center;min-width:1.15rem;height:1.15rem;padding:0 .3rem;margin-left:.35rem;background:#e46a6a;color:#fff;border-radius:999px;font-size:.62rem;font-weight:700;vertical-align:middle}.store-rating{margin:.2rem 0 .6rem;font-size:.78rem;color:#e8c493;display:flex;align-items:center;gap:.4rem}@media(max-width:600px){.store-image-button{height:145px}.store-category-title{margin-top:1.3rem}}</style>';
     return $args;
 });
 
