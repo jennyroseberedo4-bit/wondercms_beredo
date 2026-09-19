@@ -1005,6 +1005,47 @@ $Wcms->addListener('css', static function (array $args): array {
     return $args;
 });
 
+// Show/hide password (eye icon)
+$Wcms->addListener('css', static function (array $args): array {
+    $args[0] .= '<style>'
+        . '.pw-field{position:relative;display:block;margin-top:.4rem}'
+        . '.pw-field input{margin-top:0!important;padding-right:2.8rem!important}'
+        . '.pw-toggle{position:absolute!important;top:50%;right:.55rem;transform:translateY(-50%);width:2rem;height:2rem;display:grid!important;place-items:center;padding:0!important;margin:0!important;border:0!important;border-radius:6px!important;background:none!important;color:#e8c493!important;line-height:0!important;cursor:pointer;transition:color .15s ease,background .15s ease}'
+        . '.pw-toggle:hover{color:#f6c879!important;background:rgba(246,200,121,.12)!important}'
+        . '.pw-toggle:focus-visible{outline:2px solid #f6c879;outline-offset:1px}'
+        . '.coffee-admin-login .pw-toggle{color:#3a2118!important}'
+        . '.coffee-admin-login .pw-toggle:hover{color:#6d3b1c!important;background:rgba(58,33,24,.08)!important}'
+        . '</style>';
+    return $args;
+});
+
+$Wcms->addListener('js', static function (array $args): array {
+    $args[0] .= '<script>(function(){'
+        . 'var svgStart="<svg viewBox=\'0 0 24 24\' width=\'20\' height=\'20\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\' aria-hidden=\'true\'>";'
+        . 'var eye=svgStart+"<path d=\'M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z\'/><circle cx=\'12\' cy=\'12\' r=\'3\'/></svg>";'
+        . 'var eyeOff=svgStart+"<path d=\'M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a19.77 19.77 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a19.86 19.86 0 0 1-3.17 4.19M14.12 14.12a3 3 0 1 1-4.24-4.24\'/><line x1=\'1\' y1=\'1\' x2=\'23\' y2=\'23\'/></svg>";'
+        . 'function init(){'
+        .   'document.querySelectorAll(".auth-form input[type=password],.coffee-admin-login input[type=password]").forEach(function(input){'
+        .     'if(input.parentNode.classList.contains("pw-field"))return;'
+        .     'var wrap=document.createElement("span");wrap.className="pw-field";'
+        .     'input.parentNode.insertBefore(wrap,input);wrap.appendChild(input);'
+        .     'var btn=document.createElement("button");btn.type="button";btn.className="pw-toggle";'
+        .     'btn.setAttribute("aria-label","Show password");btn.setAttribute("aria-pressed","false");btn.innerHTML=eye;'
+        .     'btn.addEventListener("click",function(){'
+        .       'var show=input.type==="password";'
+        .       'input.type=show?"text":"password";'
+        .       'btn.innerHTML=show?eyeOff:eye;'
+        .       'btn.setAttribute("aria-label",show?"Hide password":"Show password");'
+        .       'btn.setAttribute("aria-pressed",show?"true":"false");'
+        .     '});'
+        .     'wrap.appendChild(btn);'
+        .   '});'
+        . '}'
+        . 'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else init();'
+        . '})();</script>';
+    return $args;
+});
+
 $Wcms->addListener('loginView', static function (array $args): array {
     if (($args[0] ?? '') !== 'Login') {
         $args[0] = '<div class="coffee-admin-login reveal"><p class="store-kicker">Brewed for your business</p>' . $args[0] . '</div>';
