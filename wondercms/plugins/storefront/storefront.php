@@ -93,6 +93,24 @@ $storefrontRedirect = static function (string $page): void {
 };
 
 $storefrontData = $storefrontRead();
+
+// NEW: after a successful login/register, add the product the visitor tried to order (if any),
+// then send them to the right page (cart if something was pending, otherwise their account).
+$storefrontFinishLogin = static function (string $role) use ($storefrontData, $storefrontRedirect): void {
+    if ($role === 'admin') $storefrontRedirect('store-admin');
+    $pendingId = (string)($_SESSION['storefront_pending_add'] ?? '');
+    unset($_SESSION['storefront_pending_add']);
+    if ($pendingId !== '') {
+        foreach ($storefrontData['products'] as $product) {
+            if ($product['id'] === $pendingId && (int)$product['stock'] > 0) {
+                $_SESSION['storefront_cart'][$pendingId] = min(99, (int)($_SESSION['storefront_cart'][$pendingId] ?? 0) + 1);
+                $storefrontRedirect('store-cart');
+            }
+        }
+    }
+    $storefrontRedirect('store-account');
+};
+
 $storefrontChanged = false;
 foreach ($storefrontData['products'] as $index => $storedProduct) {
     if ((float)($storedProduct['price'] ?? 0) < 100) {
@@ -183,7 +201,7 @@ if ($storefrontAction === 'register' && $_SERVER['REQUEST_METHOD'] === 'POST' &&
     $storefrontSave($storefrontData);
     $_SESSION['storefront_user'] = $email;
     $_SESSION['storefront_role'] = 'user';
-    $storefrontRedirect('store-account');
+    $storefrontFinishLogin('user');
 }
 
 if ($storefrontAction === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $storefrontValidToken()) {
@@ -194,7 +212,7 @@ if ($storefrontAction === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $s
             $userRoleOnLogin = $user['role'] ?? 'user';
             $_SESSION['storefront_user'] = strtolower(trim($user['email']));
             $_SESSION['storefront_role'] = $userRoleOnLogin;
-            $storefrontRedirect($userRoleOnLogin === 'admin' ? 'store-admin' : 'store-account');
+            $storefrontFinishLogin($userRoleOnLogin);
         }
     }
     $_SESSION['storefront_error'] = 'Incorrect email or password. Don\'t have an account yet? Create a new one.';
@@ -202,7 +220,7 @@ if ($storefrontAction === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST' && $s
 }
 
 if ($storefrontAction === 'logout') {
-    unset($_SESSION['storefront_user'], $_SESSION['storefront_cart'], $_SESSION['storefront_role']);
+    unset($_SESSION['storefront_user'], $_SESSION['storefront_cart'], $_SESSION['storefront_role'], $_SESSION['storefront_pending_add']);
     $storefrontRedirect('store');
 }
 
@@ -252,6 +270,12 @@ if ($storefrontAction === 'toggle_role' && $_SERVER['REQUEST_METHOD'] === 'POST'
 
 if ($storefrontAction === 'add' && $_SERVER['REQUEST_METHOD'] === 'POST' && $storefrontValidToken()) {
     $productId = trim($_POST['product_id'] ?? '');
+    // NEW: ordering requires a signed-in account. Remember what they wanted and send them to log in.
+    if (empty($_SESSION['storefront_user'])) {
+        $_SESSION['storefront_pending_add'] = $productId;
+        $_SESSION['storefront_error'] = 'Please log in or create an account first before ordering.';
+        $storefrontRedirect('store-login');
+    }
     foreach ($storefrontData['products'] as $product) {
         if ($product['id'] === $productId && (int)$product['stock'] > 0) {
             $_SESSION['storefront_cart'][$productId] = min(99, (int)($_SESSION['storefront_cart'][$productId] ?? 0) + 1);
@@ -262,8 +286,15 @@ if ($storefrontAction === 'add' && $_SERVER['REQUEST_METHOD'] === 'POST' && $sto
 }
 
 if ($storefrontAction === 'checkout' && $_SERVER['REQUEST_METHOD'] === 'POST' && $storefrontValidToken()) {
+    // NEW: server-side guard, so nobody can place an order without an account.
+    if (empty($_SESSION['storefront_user'])) {
+        $_SESSION['storefront_error'] = 'Please log in first before placing an order.';
+        $storefrontRedirect('store-login');
+    }
     $customerName = trim($_POST['customer_name'] ?? '');
     $customerEmail = strtolower(trim($_POST['customer_email'] ?? ''));
+    // When signed in, always link the order to the account email so it shows in Order history.
+    if (!empty($_SESSION['storefront_user'])) $customerEmail = $_SESSION['storefront_user'];
     $customerPhone = trim($_POST['customer_phone'] ?? '');
     $customerAddress = trim($_POST['customer_address'] ?? '');
     $paymentMethod = trim($_POST['payment_method'] ?? '');
@@ -353,7 +384,13 @@ $storefrontPage = static function (string $page) use ($storefrontData, $storefro
     if ($error) $html .= '<div class="store-alert store-alert-error">' . $storefrontEsc($error) . '</div>';
     if ($notice) $html .= '<div class="store-alert store-alert-success">' . $storefrontEsc($notice) . '</div>';
 
-    if ($page === 'store-login' || $page === 'store-register') {
+    // NEW: visitors who are not logged in cannot see the checkout, they get a "log in to order" panel instead.
+    if ($page === 'store-cart' && $userEmail === '') $page = 'store-login-required';
+
+    if ($page === 'store-login-required') {
+        $html .= '<header class="page-head reveal"><p class="store-kicker">Your basket</p><h1>Log in to order.</h1><p>You need an account to place an order. It only takes a minute, and it\'s free.</p></header>';
+        $html .= '<div class="cart-empty reveal"><p>Sign in to add items to your basket and check out.</p><p><a class="store-button" href="' . Wcms::url('store-login') . '">Log in</a> &nbsp; <a class="cart-back" href="' . Wcms::url('store-register') . '">Create a free account</a></p></div>';
+    } elseif ($page === 'store-login' || $page === 'store-register') {
         $register = $page === 'store-register';
         $html .= '<div class="auth-layout reveal">';
         $html .= '<div class="auth-visual"><img src="https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?w=1200&q=85" alt="Warm cafe interior"><div class="auth-visual-copy"><h2>' . $storefrontEsc($Wcms->get('config', 'siteTitle')) . '</h2><p>Save your favorites, follow your orders, and check out faster next time.</p></div></div>';
@@ -364,7 +401,6 @@ $storefrontPage = static function (string $page) use ($storefrontData, $storefro
         $html .= '<label>Password<input name="password" type="password" minlength="8" autocomplete="' . ($register ? 'new-password' : 'current-password') . '" placeholder="At least 8 characters" required></label>';
         $html .= '<button class="store-button auth-submit" type="submit">' . ($register ? 'Create account' : 'Sign in') . '</button></form>';
         $html .= '<p class="auth-switch"><a href="' . Wcms::url($register ? 'store-login' : 'store-register') . '">' . ($register ? 'Already have an account? Sign in' : 'New here? Create a free account') . '</a></p>';
-        $html .= '<p class="auth-guest">No account needed to order — you can also <a href="' . Wcms::url('store') . '">check out as a guest</a>.</p>';
         $html .= '</div></div>';
     } elseif ($page === 'coffee-blog') {
         $journalPosts = [
@@ -525,10 +561,12 @@ CSS;
         } else {
             $html .= '<div class="cart-layout">';
             $html .= '<section class="cart-items reveal"><h2>' . $itemCount . ' item' . ($itemCount === 1 ? '' : 's') . '</h2>' . $cartLines . '<div class="cart-total"><span>Total</span><strong>' . $storefrontMoney($total) . '</strong></div><a class="cart-back" href="' . Wcms::url('store') . '">Add something else</a></section>';
-            $html .= '<aside class="cart-checkout reveal" style="--i:2"><h2>Delivery details</h2><p class="checkout-note">Guest checkout is available — signing in is optional.</p><form class="checkout-form" method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="checkout"><label>Name<input name="customer_name" autocomplete="name" required></label><label>Email<input name="customer_email" type="email" autocomplete="email" required></label><label>Phone<input name="customer_phone" type="tel" autocomplete="tel" required></label><label>Delivery address<textarea name="customer_address" rows="3" required></textarea></label><label>Payment method<select name="payment_method" required><option value="">Choose payment method</option><option>Cash on Delivery</option><option>GCash</option><option>Bank Transfer</option><option>Pay at store</option></select></label><button class="store-button checkout-submit" type="submit">Place order · ' . $storefrontMoney($total) . '</button></form></aside>';
+            // Name / email / phone / address are prefilled from the signed-in customer's profile.
+            $html .= '<aside class="cart-checkout reveal" style="--i:2"><h2>Delivery details</h2><p class="checkout-note">Ordering as ' . $storefrontEsc($userEmail) . '</p><form class="checkout-form" method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="checkout"><label>Name<input name="customer_name" autocomplete="name" value="' . $storefrontEsc($currentUser['name'] ?? '') . '" required></label><label>Email<input name="customer_email" type="email" autocomplete="email" value="' . $storefrontEsc($userEmail) . '"' . ($userEmail !== '' ? ' readonly' : '') . ' required></label><label>Phone<input name="customer_phone" type="tel" autocomplete="tel" value="' . $storefrontEsc($currentUser['phone'] ?? '') . '" required></label><label>Delivery address<textarea name="customer_address" rows="3" required>' . $storefrontEsc($currentUser['address'] ?? '') . '</textarea></label><label>Payment method<select name="payment_method" required><option value="">Choose payment method</option><option>Cash on Delivery</option><option>GCash</option><option>Bank Transfer</option><option>Pay at store</option></select></label><button class="store-button checkout-submit" type="submit">Place order · ' . $storefrontMoney($total) . '</button></form></aside>';
             $html .= '</div>';
         }
     } elseif ($page === 'store-account') {
+        // NOTE: this account page is replaced by the improved one in the add-on section at the bottom of this file.
         $html .= '<div class="store-panel reveal"><p class="store-kicker">Account</p><h1>Your orders</h1>';
         if (!$userEmail) $html .= '<p><a class="store-button" href="' . Wcms::url('store-login') . '">Sign in</a></p>';
         else {
@@ -778,7 +816,7 @@ CSS;
                 $html .= '<h2 class="store-category-title">' . $storefrontEsc($activeCategory) . '</h2>';
             }
             $image = $storefrontEsc($product['image'] ?? '');
-            $html .= '<article class="store-product" id="product-' . $storefrontEsc($product['id']) . '" data-search="' . $storefrontEsc(($product['name'] ?? '') . ' ' . ($product['description'] ?? '') . ' ' . ($product['category'] ?? '')) . '"><button class="store-image-button" type="button" onclick="openProductZoom(this)" data-name="' . $storefrontEsc($product['name']) . '" data-image="' . $image . '" aria-label="Zoom ' . $storefrontEsc($product['name']) . '"><img src="' . $image . '" alt="' . $storefrontEsc($product['name']) . '" loading="lazy"></button><span class="store-product-number">' . $storefrontEsc(strtoupper(substr($product['name'], 0, 1))) . '</span><h2>' . $storefrontEsc($product['name']) . '</h2><p>' . $storefrontEsc($product['description']) . '</p><p class="store-rating"><span class="owl-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</span> (4.9)</p><div class="store-product-foot"><strong>' . $storefrontMoney($product['price']) . '</strong>' . ((int)$product['stock'] > 0 ? '<form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="add"><input type="hidden" name="product_id" value="' . $storefrontEsc($product['id']) . '"><button class="store-button add-to-cart-btn" type="submit"><span class="cart-icon" aria-hidden="true">🛒</span>Add to cart</button></form>' : '<span class="sold-out-badge">Sold out</span>') . '</div></article>';
+            $html .= '<article class="store-product" id="product-' . $storefrontEsc($product['id']) . '" data-search="' . $storefrontEsc(($product['name'] ?? '') . ' ' . ($product['description'] ?? '') . ' ' . ($product['category'] ?? '')) . '"><button class="store-image-button" type="button" onclick="openProductZoom(this)" data-name="' . $storefrontEsc($product['name']) . '" data-image="' . $image . '" aria-label="Zoom ' . $storefrontEsc($product['name']) . '"><img src="' . $image . '" alt="' . $storefrontEsc($product['name']) . '" loading="lazy"></button><span class="store-product-number">' . $storefrontEsc(strtoupper(substr($product['name'], 0, 1))) . '</span><h2>' . $storefrontEsc($product['name']) . '</h2><p>' . $storefrontEsc($product['description']) . '</p><p class="store-rating"><span class="owl-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</span> (4.9)</p><div class="store-product-foot"><strong>' . $storefrontMoney($product['price']) . '</strong>' . ((int)$product['stock'] > 0 ? '<form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="add"><input type="hidden" name="product_id" value="' . $storefrontEsc($product['id']) . '"><button class="store-button add-to-cart-btn" type="submit"><span class="cart-icon" aria-hidden="true">🛒</span>' . ($userEmail !== '' ? 'Add to cart' : 'Log in to order') . '</button></form>' : '<span class="sold-out-badge">Sold out</span>') . '</div></article>';
         }
         $html .= '<div id="productZoom" class="product-zoom" onclick="closeProductZoom(event)"><div class="product-zoom-content"><button type="button" onclick="closeProductZoom(event)" aria-label="Close">&times;</button><img id="productZoomImage" src="" alt=""><div class="zoom-controls"><button type="button" onclick="changeProductZoom(-.2,event)" aria-label="Zoom out">-</button><button type="button" onclick="changeProductZoom(.2,event)" aria-label="Zoom in">+</button></div><h2 id="productZoomName"></h2></div></div>';
         $html .= '</div>';
@@ -1149,5 +1187,515 @@ $Wcms->addListener('loginView', static function (array $args): array {
     if (($args[0] ?? '') !== 'Login') {
         $args[0] = '<div class="coffee-admin-login reveal"><p class="store-kicker">Brewed for your business</p>' . $args[0] . '</div>';
     }
+    return $args;
+});
+
+// =============================================================================================
+// ADD-ON: TABLE RESERVATIONS, CUSTOMER PROFILE, ORDER HISTORY
+//  - Table reservations: date, time and number of guests, with seat-capacity checks
+//  - Customer profile management: name / phone / address and password change
+//  - Account page with order history and reservations (replaces the simpler account page above)
+//  - Admin dashboard: reservation list with status updates
+// Settings you may want to change are in $resCfg below.
+// =============================================================================================
+
+// Flash messages are read now, because the main file's page renderer clears them.
+$resFlashError = (string)($_SESSION['storefront_error'] ?? '');
+$resFlashNotice = (string)($_SESSION['storefront_notice'] ?? '');
+
+// ---------------------------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------------------------
+$resCfg = [
+    'timezone'         => 'Asia/Manila',
+    'first_slot'       => '07:00',   // earliest bookable time
+    'last_slot'        => '21:00',   // last seating
+    'interval_minutes' => 30,        // gap between time slots
+    'seats_per_slot'   => 40,        // total guests we can seat at the same time slot
+    'max_party'        => 12,        // largest party bookable online
+    'advance_days'     => 60,        // how far ahead guests can book
+    'statuses'         => ['Confirmed', 'Completed', 'Cancelled', 'No-show'],
+];
+
+$resTz = new DateTimeZone($resCfg['timezone']);
+$resNow = static fn (): DateTimeImmutable => new DateTimeImmutable('now', $resTz);
+$resClip = static fn (string $text, int $max): string => function_exists('mb_substr') ? mb_substr($text, 0, $max) : substr($text, 0, $max);
+
+$resSlots = static function () use ($resCfg): array {
+    $slots = [];
+    $t = strtotime('1970-01-01 ' . $resCfg['first_slot'] . ' UTC');
+    $end = strtotime('1970-01-01 ' . $resCfg['last_slot'] . ' UTC');
+    for (; $t <= $end; $t += $resCfg['interval_minutes'] * 60) {
+        $slots[] = gmdate('H:i', $t);
+    }
+    return $slots;
+};
+
+$resWhen = static function (array $reservation) use ($resTz): ?DateTimeImmutable {
+    $dt = DateTimeImmutable::createFromFormat('!Y-m-d H:i', ($reservation['date'] ?? '') . ' ' . ($reservation['time'] ?? ''), $resTz);
+    return $dt instanceof DateTimeImmutable ? $dt : null;
+};
+
+if (!isset($storefrontData['reservations']) || !is_array($storefrontData['reservations'])) {
+    $storefrontData['reservations'] = [];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Who is signed in?
+// ---------------------------------------------------------------------------------------------
+$resUserEmail = (string)($_SESSION['storefront_user'] ?? '');
+$resCurrentUser = null;
+$resCurrentIndex = null;
+if ($resUserEmail !== '') {
+    foreach ($storefrontData['users'] as $resIndex => $resUser) {
+        if (strtolower(trim($resUser['email'] ?? '')) === $resUserEmail) {
+            $resCurrentUser = $resUser;
+            $resCurrentIndex = $resIndex;
+            break;
+        }
+    }
+}
+$resSessionIds = (array)($_SESSION['storefront_my_reservations'] ?? []);
+$resOwns = static fn (array $r): bool => ($resUserEmail !== '' && strtolower(trim($r['email'] ?? '')) === $resUserEmail)
+    || in_array($r['id'] ?? '', $resSessionIds, true);
+
+// Make the new routes resolve (same trick the main file uses).
+if (in_array($Wcms->currentPage, ['store-reservation', 'store-profile'], true)) {
+    $Wcms->currentPageExists = true;
+    $Wcms->headerResponse = 'HTTP/1.0 200 OK';
+}
+
+$resIsPost = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST';
+$resAction = $storefrontAction ?? ($_POST['storefront_action'] ?? $_GET['storefront_action'] ?? '');
+
+// ---------------------------------------------------------------------------------------------
+// Action: book a table
+// ---------------------------------------------------------------------------------------------
+if ($resIsPost && $resAction === 'reserve' && $storefrontValidToken()) {
+    $form = [
+        'name'   => $resClip(trim((string)($_POST['res_name'] ?? '')), 80),
+        'email'  => strtolower(trim((string)($_POST['res_email'] ?? ''))),
+        'phone'  => $resClip(trim((string)($_POST['res_phone'] ?? '')), 30),
+        'date'   => trim((string)($_POST['res_date'] ?? '')),
+        'time'   => trim((string)($_POST['res_time'] ?? '')),
+        'guests' => (int)($_POST['res_guests'] ?? 0),
+        'notes'  => $resClip(trim((string)($_POST['res_notes'] ?? '')), 300),
+    ];
+    if ($resUserEmail !== '') $form['email'] = $resUserEmail;
+
+    $when = $resWhen($form);
+    $now = $resNow();
+    $error = '';
+
+    if ($form['name'] === '' || !filter_var($form['email'], FILTER_VALIDATE_EMAIL) || $form['phone'] === '') {
+        $error = 'Please enter your name, a valid email, and a phone number so we can reach you.';
+    } elseif ($form['guests'] < 1 || $form['guests'] > $resCfg['max_party']) {
+        $error = 'Online bookings are for 1 to ' . $resCfg['max_party'] . ' guests. For a larger group, please contact us directly.';
+    } elseif (!$when || $when->format('Y-m-d') !== $form['date'] || !in_array($form['time'], $resSlots(), true)) {
+        $error = 'Please choose a valid date and one of the available times.';
+    } elseif ($when < $now->modify('+30 minutes')) {
+        $error = 'That time has already passed or is too soon. Please book at least 30 minutes ahead.';
+    } elseif ($when > $now->modify('+' . (int)$resCfg['advance_days'] . ' days')) {
+        $error = 'Bookings open up to ' . (int)$resCfg['advance_days'] . ' days in advance.';
+    } else {
+        $booked = 0;
+        $duplicate = false;
+        foreach ($storefrontData['reservations'] as $existing) {
+            if (($existing['date'] ?? '') !== $form['date'] || ($existing['time'] ?? '') !== $form['time']) continue;
+            if (($existing['status'] ?? '') === 'Cancelled') continue;
+            $booked += (int)($existing['guests'] ?? 0);
+            if (strtolower(trim($existing['email'] ?? '')) === $form['email']) $duplicate = true;
+        }
+        $seatsLeft = max(0, (int)$resCfg['seats_per_slot'] - $booked);
+        if ($duplicate) {
+            $error = 'You already have a reservation at that date and time.';
+        } elseif ($form['guests'] > $seatsLeft) {
+            $error = $seatsLeft === 0
+                ? 'Sorry, that time is fully booked. Please pick another time.'
+                : 'Only ' . $seatsLeft . ' seat' . ($seatsLeft === 1 ? '' : 's') . ' left at that time. Try a smaller party or another time.';
+        }
+    }
+
+    if ($error !== '') {
+        $_SESSION['storefront_error'] = $error;
+        $_SESSION['storefront_res_old'] = $form;
+        $storefrontRedirect('store-reservation');
+    }
+
+    $reservationId = 'RES-' . strtoupper(bin2hex(random_bytes(4)));
+    $storefrontData['reservations'][] = [
+        'id'      => $reservationId,
+        'name'    => $form['name'],
+        'email'   => $form['email'],
+        'phone'   => $form['phone'],
+        'date'    => $form['date'],
+        'time'    => $form['time'],
+        'guests'  => $form['guests'],
+        'notes'   => $form['notes'],
+        'status'  => 'Confirmed',
+        'created' => date('c'),
+    ];
+    $storefrontSave($storefrontData);
+    $_SESSION['storefront_my_reservations'][] = $reservationId;
+    $_SESSION['storefront_notice'] = 'Table reserved! Reference ' . $reservationId . ' · ' . $when->format('D, M j') . ' at ' . $when->format('g:i A') . ' for ' . $form['guests'] . ($form['guests'] === 1 ? ' guest.' : ' guests.');
+    $storefrontRedirect('store-reservation');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Action: cancel your own reservation
+// ---------------------------------------------------------------------------------------------
+if ($resIsPost && $resAction === 'cancel_reservation' && $storefrontValidToken()) {
+    $cancelId = trim((string)($_POST['reservation_id'] ?? ''));
+    $returnTo = in_array($_POST['return'] ?? '', ['store-account', 'store-reservation'], true) ? $_POST['return'] : 'store-reservation';
+    $cancelled = false;
+    foreach ($storefrontData['reservations'] as $resIndex => $reservation) {
+        if (($reservation['id'] ?? '') !== $cancelId) continue;
+        $when = $resWhen($reservation);
+        if ($resOwns($reservation) && ($reservation['status'] ?? '') === 'Confirmed' && $when && $when > $resNow()) {
+            $storefrontData['reservations'][$resIndex]['status'] = 'Cancelled';
+            $storefrontData['reservations'][$resIndex]['updated'] = date('c');
+            $cancelled = true;
+        }
+        break;
+    }
+    if ($cancelled) {
+        $storefrontSave($storefrontData);
+        $_SESSION['storefront_notice'] = 'Reservation ' . $cancelId . ' has been cancelled.';
+    } else {
+        $_SESSION['storefront_error'] = 'That reservation could not be cancelled. It may already be past or cancelled.';
+    }
+    $storefrontRedirect($returnTo);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Action: admin changes a reservation status
+// ---------------------------------------------------------------------------------------------
+if ($resIsPost && $resAction === 'reservation_status' && $storefrontIsAdmin && $storefrontAdminActionAuthorized()) {
+    $statusId = trim((string)($_POST['reservation_id'] ?? ''));
+    $newStatus = trim((string)($_POST['new_status'] ?? ''));
+    if (in_array($newStatus, $resCfg['statuses'], true)) {
+        foreach ($storefrontData['reservations'] as $resIndex => $reservation) {
+            if (($reservation['id'] ?? '') === $statusId) {
+                $storefrontData['reservations'][$resIndex]['status'] = $newStatus;
+                $storefrontData['reservations'][$resIndex]['updated'] = date('c');
+                $storefrontSave($storefrontData);
+                break;
+            }
+        }
+    }
+    $storefrontRedirect('store-admin');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Action: update profile details
+// ---------------------------------------------------------------------------------------------
+if ($resIsPost && $resAction === 'update_profile' && $storefrontValidToken()) {
+    if ($resCurrentIndex === null) $storefrontRedirect('store-login');
+    $profileName = $resClip(trim((string)($_POST['profile_name'] ?? '')), 80);
+    $profilePhone = $resClip(trim((string)($_POST['profile_phone'] ?? '')), 30);
+    $profileAddress = $resClip(trim((string)($_POST['profile_address'] ?? '')), 300);
+    if ($profileName === '') {
+        $_SESSION['storefront_error'] = 'Please enter your name.';
+    } elseif ($profilePhone !== '' && !preg_match('/^[0-9+()\-\s]{7,30}$/', $profilePhone)) {
+        $_SESSION['storefront_error'] = 'Please enter a valid phone number (digits, spaces, + and - only).';
+    } else {
+        $storefrontData['users'][$resCurrentIndex]['name'] = $profileName;
+        $storefrontData['users'][$resCurrentIndex]['phone'] = $profilePhone;
+        $storefrontData['users'][$resCurrentIndex]['address'] = $profileAddress;
+        $storefrontSave($storefrontData);
+        $_SESSION['storefront_notice'] = 'Your profile has been updated.';
+    }
+    $storefrontRedirect('store-profile');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Action: change password
+// ---------------------------------------------------------------------------------------------
+if ($resIsPost && $resAction === 'change_password' && $storefrontValidToken()) {
+    if ($resCurrentIndex === null) $storefrontRedirect('store-login');
+    $currentPassword = (string)($_POST['current_password'] ?? '');
+    $newPassword = (string)($_POST['new_password'] ?? '');
+    $confirmPassword = (string)($_POST['confirm_password'] ?? '');
+    if (!password_verify($currentPassword, (string)($resCurrentUser['password'] ?? ''))) {
+        $_SESSION['storefront_error'] = 'Your current password is incorrect.';
+    } elseif (strlen($newPassword) < 8) {
+        $_SESSION['storefront_error'] = 'Your new password must be at least 8 characters.';
+    } elseif ($newPassword !== $confirmPassword) {
+        $_SESSION['storefront_error'] = 'The new passwords do not match.';
+    } else {
+        $storefrontData['users'][$resCurrentIndex]['password'] = password_hash($newPassword, PASSWORD_DEFAULT);
+        $storefrontSave($storefrontData);
+        session_regenerate_id(true);
+        $_SESSION['storefront_notice'] = 'Your password has been changed.';
+    }
+    $storefrontRedirect('store-profile');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rendering helpers
+// ---------------------------------------------------------------------------------------------
+$resFlashHtml = static function () use ($storefrontEsc, $resFlashError, $resFlashNotice): string {
+    unset($_SESSION['storefront_error'], $_SESSION['storefront_notice']);
+    $out = '';
+    if ($resFlashError !== '') $out .= '<div class="store-alert store-alert-error">' . $storefrontEsc($resFlashError) . '</div>';
+    if ($resFlashNotice !== '') $out .= '<div class="store-alert store-alert-success">' . $storefrontEsc($resFlashNotice) . '</div>';
+    return $out;
+};
+
+$resNav = static function (string $active): string {
+    $items = ['store-account' => 'Orders and club', 'store-reservation' => 'Reservations', 'store-profile' => 'Profile'];
+    $out = '<nav class="account-nav" aria-label="Account">';
+    foreach ($items as $slug => $label) {
+        $out .= '<a class="' . ($slug === $active ? 'is-active' : '') . '" href="' . Wcms::url($slug) . '">' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '</a>';
+    }
+    return $out . '</nav>';
+};
+
+$resRows = static function (array $list, string $returnPage) use ($storefrontEsc, $storefrontToken, $resWhen, $resNow): string {
+    $rows = '';
+    $now = $resNow();
+    foreach ($list as $r) {
+        $when = $resWhen($r);
+        $label = $when ? $when->format('D, M j, Y · g:i A') : trim(($r['date'] ?? '') . ' ' . ($r['time'] ?? ''));
+        $status = (string)($r['status'] ?? 'Confirmed');
+        $guests = (int)($r['guests'] ?? 0);
+        $canCancel = $status === 'Confirmed' && $when && $when > $now;
+        $rows .= '<div class="res-item"><div class="res-item-main"><strong>' . $storefrontEsc($label) . '</strong><span>' . $guests . ($guests === 1 ? ' guest' : ' guests') . ' · ' . $storefrontEsc($r['id'] ?? '') . '</span></div>'
+            . '<span class="res-badge res-' . strtolower(preg_replace('/[^A-Za-z]/', '', $status)) . '">' . $storefrontEsc($status) . '</span>';
+        if ($canCancel) {
+            $rows .= '<form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="cancel_reservation"><input type="hidden" name="reservation_id" value="' . $storefrontEsc($r['id'] ?? '') . '"><input type="hidden" name="return" value="' . $storefrontEsc($returnPage) . '"><button class="store-link-button" type="submit" onclick="return confirm(\'Cancel this reservation?\')">Cancel</button></form>';
+        }
+        $rows .= '</div>';
+    }
+    return $rows;
+};
+
+$resAdminPanel = static function () use ($Wcms, $storefrontData, $storefrontEsc, $storefrontToken, $resCfg, $resWhen, $resNow): string {
+    $wcmsToken = $Wcms->loggedIn ? $Wcms->getToken() : '';
+    $storeToken = $storefrontToken();
+    $list = $storefrontData['reservations'];
+    usort($list, static fn (array $a, array $b): int => strcmp(($b['date'] ?? '') . ($b['time'] ?? ''), ($a['date'] ?? '') . ($a['time'] ?? '')));
+    $now = $resNow();
+    $upcoming = 0;
+    foreach ($list as $r) {
+        $when = $resWhen($r);
+        if (($r['status'] ?? '') === 'Confirmed' && $when && $when > $now) $upcoming++;
+    }
+    $out = '<h2 id="storeAdminReservations">Table reservations (' . count($list) . ' total · ' . $upcoming . ' upcoming)</h2>';
+    if (!$list) return $out . '<p>No reservations yet.</p>';
+    foreach ($list as $r) {
+        $when = $resWhen($r);
+        $label = $when ? $when->format('D, M j, Y · g:i A') : trim(($r['date'] ?? '') . ' ' . ($r['time'] ?? ''));
+        $guests = (int)($r['guests'] ?? 0);
+        $notes = trim((string)($r['notes'] ?? ''));
+        $status = (string)($r['status'] ?? 'Confirmed');
+        $options = '';
+        foreach ($resCfg['statuses'] as $option) {
+            $options .= '<option' . ($option === $status ? ' selected' : '') . '>' . $storefrontEsc($option) . '</option>';
+        }
+        $out .= '<div class="store-line res-admin-line"><span>' . $storefrontEsc($r['name'] ?? '') . ' &lt;' . $storefrontEsc($r['email'] ?? '') . '&gt; · ' . $storefrontEsc($r['phone'] ?? '')
+            . '<br>' . $storefrontEsc($label) . ' · ' . $guests . ($guests === 1 ? ' guest' : ' guests') . ' · ' . $storefrontEsc($r['id'] ?? '')
+            . ($notes !== '' ? '<br>Note: ' . $storefrontEsc($notes) : '')
+            . '</span><form class="res-admin-form" method="post"><input type="hidden" name="token" value="' . $wcmsToken . '"><input type="hidden" name="storefront_token" value="' . $storeToken . '"><input type="hidden" name="storefront_action" value="reservation_status"><input type="hidden" name="reservation_id" value="' . $storefrontEsc($r['id'] ?? '') . '"><select name="new_status" aria-label="Reservation status">' . $options . '</select><button class="store-link-button" type="submit">Update</button></form></div>';
+    }
+    return $out;
+};
+
+$resRenderPage = static function (string $page) use (
+    $Wcms, $storefrontData, $storefrontEsc, $storefrontMoney, $storefrontToken,
+    $resCfg, $resTz, $resSlots, $resNow, $resOwns, $resRows, $resNav, $resFlashHtml,
+    $resUserEmail, $resCurrentUser
+): string {
+    $html = '<div class="storefront-shell">' . $resFlashHtml();
+
+    // Mine = reservations of the signed-in customer, plus any this browser session made as a guest.
+    $mine = [];
+    foreach (array_reverse($storefrontData['reservations']) as $r) {
+        if ($resOwns($r)) $mine[] = $r;
+    }
+
+    // ---------------------------------------------------------------- Reservations
+    if ($page === 'store-reservation') {
+        $today = $resNow();
+        $minDate = $today->format('Y-m-d');
+        $maxDate = $today->modify('+' . (int)$resCfg['advance_days'] . ' days')->format('Y-m-d');
+        $old = (array)($_SESSION['storefront_res_old'] ?? []);
+        unset($_SESSION['storefront_res_old']);
+
+        $fName = (string)($old['name'] ?? ($resCurrentUser['name'] ?? ''));
+        $fEmail = $resUserEmail !== '' ? $resUserEmail : (string)($old['email'] ?? '');
+        $fPhone = (string)($old['phone'] ?? ($resCurrentUser['phone'] ?? ''));
+        $fDate = (string)($old['date'] ?? '');
+        $fTime = (string)($old['time'] ?? '');
+        $fGuests = (int)($old['guests'] ?? 2);
+        if ($fGuests < 1) $fGuests = 2;
+        $fNotes = (string)($old['notes'] ?? '');
+
+        $timeOptions = '<option value="">Select a time</option>';
+        foreach ($resSlots() as $slot) {
+            $label = gmdate('g:i A', strtotime('1970-01-01 ' . $slot . ' UTC'));
+            $timeOptions .= '<option value="' . $slot . '"' . ($slot === $fTime ? ' selected' : '') . '>' . $label . '</option>';
+        }
+        $guestOptions = '';
+        for ($g = 1; $g <= (int)$resCfg['max_party']; $g++) {
+            $guestOptions .= '<option value="' . $g . '"' . ($g === $fGuests ? ' selected' : '') . '>' . $g . ($g === 1 ? ' guest' : ' guests') . '</option>';
+        }
+        $lastSlot = gmdate('g:i A', strtotime('1970-01-01 ' . $resCfg['last_slot'] . ' UTC'));
+
+        $html .= '<header class="page-head reveal"><p class="store-kicker">Dine with us</p><h1>Reserve a table</h1><p>Pick a date, a time, and how many of you are coming. We will keep a table ready.</p></header>';
+        if ($resCurrentUser) $html .= $resNav('store-reservation');
+
+        $html .= '<div class="cart-layout">';
+        $html .= '<section class="cart-checkout reveal"><h2>Book a table</h2><form class="checkout-form" method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="reserve">'
+            . '<label>Name<input name="res_name" autocomplete="name" maxlength="80" value="' . $storefrontEsc($fName) . '" required></label>'
+            . '<label>Email<input name="res_email" type="email" autocomplete="email" value="' . $storefrontEsc($fEmail) . '"' . ($resUserEmail !== '' ? ' readonly' : '') . ' required></label>'
+            . '<label>Phone<input name="res_phone" type="tel" autocomplete="tel" maxlength="30" value="' . $storefrontEsc($fPhone) . '" required></label>'
+            . '<div class="res-row"><label>Date<input name="res_date" type="date" min="' . $minDate . '" max="' . $maxDate . '" value="' . $storefrontEsc($fDate) . '" required></label>'
+            . '<label>Time<select name="res_time" required>' . $timeOptions . '</select></label></div>'
+            . '<label>Number of guests<select name="res_guests" required>' . $guestOptions . '</select></label>'
+            . '<label>Special requests (optional)<textarea name="res_notes" rows="3" maxlength="300" placeholder="Birthday, high chair, window seat…">' . $storefrontEsc($fNotes) . '</textarea></label>'
+            . '<button class="store-button checkout-submit" type="submit">Reserve table</button></form></section>';
+
+        $html .= '<aside class="cart-checkout reveal" style="--i:2"><h2>Good to know</h2><p class="res-info">Open daily 7:00 AM – 10:00 PM. Last seating is at ' . $storefrontEsc($lastSlot) . '. Online bookings are for 1 to ' . (int)$resCfg['max_party'] . ' guests and open up to ' . (int)$resCfg['advance_days'] . ' days ahead.</p>';
+        $html .= '<h2>' . ($resCurrentUser ? 'Your reservations' : 'Reservations from this visit') . '</h2>';
+        $html .= $mine ? $resRows($mine, 'store-reservation') : '<p class="res-info">No reservations yet.</p>';
+        if (!$resCurrentUser) $html .= '<p class="res-info"><a href="' . Wcms::url('store-login') . '">Sign in</a> to keep your reservations in your account.</p>';
+        $html .= '</aside></div>';
+
+    // ---------------------------------------------------------------- Profile
+    } elseif ($page === 'store-profile') {
+        $html .= '<header class="page-head reveal"><p class="store-kicker">Account</p><h1>Your profile</h1><p>Save your details once and we will fill them in at checkout and when you book a table.</p></header>';
+        if (!$resCurrentUser) {
+            $html .= '<div class="store-panel reveal"><p>Please sign in to manage your profile.</p><p><a class="store-button" href="' . Wcms::url('store-login') . '">Sign in</a></p></div>';
+        } else {
+            $html .= $resNav('store-profile');
+            $html .= '<div class="cart-layout">';
+            $html .= '<section class="cart-checkout reveal"><h2>Your details</h2><form class="checkout-form" method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="update_profile">'
+                . '<label>Name<input name="profile_name" autocomplete="name" maxlength="80" value="' . $storefrontEsc($resCurrentUser['name'] ?? '') . '" required></label>'
+                . '<label>Email<input type="email" value="' . $storefrontEsc($resCurrentUser['email'] ?? '') . '" readonly></label>'
+                . '<label>Phone<input name="profile_phone" type="tel" autocomplete="tel" maxlength="30" value="' . $storefrontEsc($resCurrentUser['phone'] ?? '') . '"></label>'
+                . '<label>Delivery address<textarea name="profile_address" rows="3" maxlength="300" autocomplete="street-address">' . $storefrontEsc($resCurrentUser['address'] ?? '') . '</textarea></label>'
+                . '<button class="store-button checkout-submit" type="submit">Save changes</button></form></section>';
+            $html .= '<aside class="cart-checkout reveal" style="--i:2"><h2>Change password</h2><form class="checkout-form" method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="change_password">'
+                . '<label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label>'
+                . '<label>New password<input name="new_password" type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label>'
+                . '<label>Confirm new password<input name="confirm_password" type="password" minlength="8" autocomplete="new-password" required></label>'
+                . '<button class="store-button checkout-submit" type="submit">Update password</button></form></aside>';
+            $html .= '</div>';
+        }
+
+    // ---------------------------------------------------------------- Account / order history
+    } else {
+        if (!$resCurrentUser) {
+            $html .= '<div class="store-panel reveal"><p class="store-kicker">Account</p><h1>Your account</h1><p>Sign in to see your orders, reservations, and profile.</p><p><a class="store-button" href="' . Wcms::url('store-login') . '">Sign in</a> &nbsp; <a href="' . Wcms::url('store-register') . '">Create a free account</a></p></div>';
+        } else {
+            $isAdmin = ($resCurrentUser['role'] ?? 'user') === 'admin';
+            $isSubscribed = (bool)($resCurrentUser['subscribed'] ?? false);
+
+            $orderCards = '';
+            $orderCount = 0;
+            foreach (array_reverse($storefrontData['orders']) as $order) {
+                if (strtolower(trim($order['email'] ?? '')) !== $resUserEmail) continue;
+                $orderCount++;
+                $lines = [];
+                foreach (($order['items'] ?? []) as $item) $lines[] = (int)($item['quantity'] ?? 0) . '× ' . ($item['name'] ?? '');
+                try {
+                    $placed = (new DateTimeImmutable($order['created'] ?? 'now'))->setTimezone($resTz)->format('M j, Y · g:i A');
+                } catch (Exception $e) {
+                    $placed = '';
+                }
+                $orderCards .= '<div class="order-card"><div class="order-card-head"><strong>' . $storefrontEsc($order['id'] ?? '') . '</strong><span>' . $storefrontEsc($placed) . '</span><span class="res-badge">' . $storefrontEsc($order['status'] ?? 'Received') . '</span></div>'
+                    . '<p class="order-card-items">' . $storefrontEsc(implode(', ', $lines)) . '</p>'
+                    . '<div class="order-card-foot"><span>' . $storefrontEsc($order['payment_method'] ?? 'Payment pending') . '</span><span class="store-line-right"><a class="receipt-link" href="' . Wcms::url('store-receipt') . '?order=' . urlencode($order['id'] ?? '') . '">Receipt</a><strong>' . $storefrontMoney($order['total'] ?? 0) . '</strong></span></div></div>';
+            }
+
+            $html .= '<div class="store-panel reveal"><p class="store-kicker">Account</p><h1>Hello, ' . $storefrontEsc($resCurrentUser['name'] ?? 'friend') . '</h1>';
+            $html .= $resNav('store-account');
+            $html .= '<p class="store-role-badge">Signed in as <strong>' . $storefrontEsc($resUserEmail) . '</strong> · ' . ($isAdmin ? 'Admin · <a href="' . Wcms::url('store-admin') . '">Go to admin dashboard</a>' : 'Customer') . '</p>';
+
+            // WonderBrew Club box (same subscribe / unsubscribe actions as before)
+            $html .= '<div class="store-subscribe-box"><h2>WonderBrew Club</h2>';
+            if ($isSubscribed) {
+                $since = !empty($resCurrentUser['subscribed_since']) ? ' since ' . $storefrontEsc(date('M j, Y', strtotime($resCurrentUser['subscribed_since']))) : '';
+                $html .= '<p>You\'re subscribed to the <strong>Free Plan</strong>' . $since . '. No charge, just updates on promos and new products.</p><form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="unsubscribe"><button class="store-link-button" type="submit">Cancel subscription</button></form>';
+            } else {
+                $html .= '<p>Join the WonderBrew Club. It is free, and you\'ll get updates on promos and new menu items.</p><form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="subscribe"><button class="store-button" type="submit">Subscribe (Free)</button></form>';
+            }
+            $html .= '</div>';
+
+            $html .= '<h2>Order history <span class="order-count">' . $orderCount . '</span></h2>';
+            $html .= $orderCount ? $orderCards : '<p>No orders yet. <a href="' . Wcms::url('store') . '">Browse the menu</a></p>';
+
+            $html .= '<h2>Table reservations</h2>';
+            $html .= $mine ? $resRows(array_slice($mine, 0, 5), 'store-account') : '<p>No reservations yet.</p>';
+            $html .= '<p><a class="store-button" href="' . Wcms::url('store-reservation') . '">Book a table</a></p>';
+
+            $html .= '<p><a href="' . Wcms::url('storefront?storefront_action=logout') . '">Sign out</a></p></div>';
+        }
+    }
+
+    return $html . '</div>';
+};
+
+// ---------------------------------------------------------------------------------------------
+// Hooks
+// ---------------------------------------------------------------------------------------------
+$Wcms->addListener('page', static function (array $args) use ($Wcms, $storefrontIsAdmin, $resRenderPage, $resAdminPanel): array {
+    $page = $Wcms->currentPage;
+    $titles = ['store-account' => 'Your account', 'store-reservation' => 'Reserve a table', 'store-profile' => 'Your profile'];
+
+    if (isset($titles[$page])) {
+        if ($args[1] === 'title') $args[0] = $Wcms->get('config', 'siteTitle') . ' - ' . $titles[$page];
+        if ($args[1] === 'description') $args[0] = 'Manage your account, orders, and table reservations.';
+        if ($args[1] === 'content') $args[0] = $resRenderPage($page);
+        return $args;
+    }
+
+    // Add the reservation list to the admin dashboard, just above the accounts list.
+    if ($page === 'store-admin' && $args[1] === 'content' && $storefrontIsAdmin) {
+        $anchor = '<h2 id="storeAdminAccounts">';
+        $pos = strpos((string)$args[0], $anchor);
+        if ($pos !== false) $args[0] = substr_replace($args[0], $resAdminPanel(), $pos, 0);
+    }
+    return $args;
+});
+
+$Wcms->addListener('menu', static function (array $args): array {
+    $args[0] .= '<li><a href="' . Wcms::url('store-reservation') . '">Reserve</a></li><li><a href="' . Wcms::url('store-account') . '">Account</a></li>';
+    return $args;
+});
+
+$resCss = <<<'CSS'
+.account-nav{display:flex;flex-wrap:wrap;gap:.5rem;margin:0 0 1.4rem}
+.account-nav a{padding:.45rem 1rem;border-radius:999px;border:1px solid rgba(247,218,181,.26);color:#e8c493;font-size:.8rem;text-decoration:none;transition:background .2s ease}
+.account-nav a:hover{background:rgba(246,200,121,.12);border-bottom:1px solid rgba(247,218,181,.26)}
+.account-nav a.is-active{background:#f6c879;color:#3a2118;border-color:#f6c879;font-weight:600}
+.res-row{display:grid;grid-template-columns:1fr 1fr;gap:.8rem}
+.checkout-form input[type=date]{color-scheme:dark}
+.checkout-form input[readonly]{opacity:.65;cursor:not-allowed}
+.res-info{color:#e7cdaa;opacity:.85;font-size:.86rem;line-height:1.65;margin:0 0 1.2rem}
+.res-item{display:flex;align-items:center;gap:.8rem;padding:.8rem 0;border-bottom:1px solid rgba(247,218,181,.1)}
+.res-item-main{display:flex;flex-direction:column;flex:1;min-width:0}
+.res-item-main strong{color:#f8dfbc;font-size:.9rem}
+.res-item-main span{color:#e7cdaa;opacity:.75;font-size:.76rem}
+.res-badge{font-size:.68rem;font-weight:600;padding:.25rem .65rem;border-radius:999px;background:rgba(246,200,121,.16);color:#f6c879;white-space:nowrap}
+.res-cancelled,.res-noshow{background:rgba(228,106,106,.16);color:#e46a6a}
+.res-completed{background:rgba(51,194,160,.16);color:#33c2a0}
+.order-card{background:rgba(12,6,4,.35);border:1px solid rgba(247,218,181,.14);border-radius:12px;padding:1rem 1.1rem;margin-bottom:.8rem}
+.order-card-head{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem .9rem}
+.order-card-head strong{color:#f8dfbc;font-size:.9rem}
+.order-card-head span:nth-child(2){color:#e7cdaa;opacity:.75;font-size:.76rem;flex:1}
+.order-card-items{margin:.6rem 0!important;color:#e7cdaa;opacity:.85;font-size:.84rem!important}
+.order-card-foot{display:flex;justify-content:space-between;align-items:center;font-size:.8rem;color:#e7cdaa}
+.order-card .store-line-right{display:flex;align-items:center;gap:.9rem}
+.order-card .receipt-link{color:#f6c879;font-size:.8rem;border-bottom:0}
+.order-count{display:inline-block;margin-left:.4rem;padding:.1rem .6rem;border-radius:999px;background:rgba(246,200,121,.16);color:#f6c879;font-size:.7rem;font-family:"Poppins",sans-serif;vertical-align:middle}
+.res-admin-form{display:flex;align-items:center;gap:.5rem;flex:0 0 auto}
+.res-admin-form select{background:#2b1712;color:#fff;border:1px solid rgba(247,218,181,.3);border-radius:6px;padding:.35rem .5rem;font-size:.75rem;font-family:"Poppins",sans-serif}
+@media(max-width:600px){.res-row{grid-template-columns:1fr}.res-item{flex-wrap:wrap}.res-admin-line{flex-direction:column;align-items:flex-start}}
+CSS;
+
+$Wcms->addListener('css', static function (array $args) use ($resCss): array {
+    $args[0] .= '<style>' . $resCss . '</style>';
     return $args;
 });
