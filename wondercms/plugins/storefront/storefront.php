@@ -746,6 +746,9 @@ CSS;
         foreach ($products as $product) { if ($product['id'] === 'mocha') { $featuredProduct = $product; break; } }
         if (!$featuredProduct && $products) $featuredProduct = $products[0];
 
+        // Menu search bar (filters the product grid below as the visitor types).
+        $html .= '<div class="store-search" role="search"><svg class="store-search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input type="search" id="storeSearch" placeholder="Search coffee, pastries, meals…" autocomplete="off" aria-label="Search the menu"><span class="store-search-count" id="storeSearchCount"></span><button type="button" class="store-search-clear" id="storeSearchClear" aria-label="Clear search" hidden>&times;</button></div>';
+
         $html .= '<section class="owl-hero">';
         $html .= '<div class="owl-hero-grid">';
 
@@ -767,6 +770,7 @@ CSS;
         $html .= '</section>';
 
         $html .= '<div class="store-grid" id="store-grid-start">';
+        $html .= '<p class="store-no-results" id="storeNoResults" hidden>No items match your search. Try a different word.</p>';
         $activeCategory = '';
         foreach ($products as $product) {
             if (($product['category'] ?? '') !== $activeCategory) {
@@ -774,7 +778,7 @@ CSS;
                 $html .= '<h2 class="store-category-title">' . $storefrontEsc($activeCategory) . '</h2>';
             }
             $image = $storefrontEsc($product['image'] ?? '');
-            $html .= '<article class="store-product" id="product-' . $storefrontEsc($product['id']) . '"><button class="store-image-button" type="button" onclick="openProductZoom(this)" data-name="' . $storefrontEsc($product['name']) . '" data-image="' . $image . '" aria-label="Zoom ' . $storefrontEsc($product['name']) . '"><img src="' . $image . '" alt="' . $storefrontEsc($product['name']) . '" loading="lazy"></button><span class="store-product-number">' . $storefrontEsc(strtoupper(substr($product['name'], 0, 1))) . '</span><h2>' . $storefrontEsc($product['name']) . '</h2><p>' . $storefrontEsc($product['description']) . '</p><p class="store-rating"><span class="owl-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</span> (4.9)</p><div class="store-product-foot"><strong>' . $storefrontMoney($product['price']) . '</strong>' . ((int)$product['stock'] > 0 ? '<form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="add"><input type="hidden" name="product_id" value="' . $storefrontEsc($product['id']) . '"><button class="store-button add-to-cart-btn" type="submit"><span class="cart-icon" aria-hidden="true">🛒</span>Add to cart</button></form>' : '<span class="sold-out-badge">Sold out</span>') . '</div></article>';
+            $html .= '<article class="store-product" id="product-' . $storefrontEsc($product['id']) . '" data-search="' . $storefrontEsc(($product['name'] ?? '') . ' ' . ($product['description'] ?? '') . ' ' . ($product['category'] ?? '')) . '"><button class="store-image-button" type="button" onclick="openProductZoom(this)" data-name="' . $storefrontEsc($product['name']) . '" data-image="' . $image . '" aria-label="Zoom ' . $storefrontEsc($product['name']) . '"><img src="' . $image . '" alt="' . $storefrontEsc($product['name']) . '" loading="lazy"></button><span class="store-product-number">' . $storefrontEsc(strtoupper(substr($product['name'], 0, 1))) . '</span><h2>' . $storefrontEsc($product['name']) . '</h2><p>' . $storefrontEsc($product['description']) . '</p><p class="store-rating"><span class="owl-stars">&#9733;&#9733;&#9733;&#9733;&#9733;</span> (4.9)</p><div class="store-product-foot"><strong>' . $storefrontMoney($product['price']) . '</strong>' . ((int)$product['stock'] > 0 ? '<form method="post"><input type="hidden" name="storefront_token" value="' . $storefrontToken() . '"><input type="hidden" name="storefront_action" value="add"><input type="hidden" name="product_id" value="' . $storefrontEsc($product['id']) . '"><button class="store-button add-to-cart-btn" type="submit"><span class="cart-icon" aria-hidden="true">🛒</span>Add to cart</button></form>' : '<span class="sold-out-badge">Sold out</span>') . '</div></article>';
         }
         $html .= '<div id="productZoom" class="product-zoom" onclick="closeProductZoom(event)"><div class="product-zoom-content"><button type="button" onclick="closeProductZoom(event)" aria-label="Close">&times;</button><img id="productZoomImage" src="" alt=""><div class="zoom-controls"><button type="button" onclick="changeProductZoom(-.2,event)" aria-label="Zoom out">-</button><button type="button" onclick="changeProductZoom(.2,event)" aria-label="Zoom in">+</button></div><h2 id="productZoomName"></h2></div></div>';
         $html .= '</div>';
@@ -1070,6 +1074,74 @@ $Wcms->addListener('js', static function (array $args): array {
         . '}'
         . 'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",init);else init();'
         . '})();</script>';
+    return $args;
+});
+
+// Menu search bar
+$Wcms->addListener('css', static function (array $args): array {
+    $args[0] .= '<style>'
+        . '.store-search{position:sticky;top:.75rem;z-index:60;display:flex;align-items:center;gap:.6rem;max-width:640px;margin:0 auto 1.4rem;padding:.35rem .5rem .35rem 1.1rem;background:#1b0f0a;border:1px solid rgba(247,218,181,.28);border-radius:999px;box-shadow:0 10px 30px rgba(0,0,0,.35);transition:border-color .2s ease}'
+        . '.store-search:focus-within{border-color:#f6c879}'
+        . '.store-search-icon{flex:0 0 auto;color:#f6c879}'
+        . '.store-search input{flex:1;min-width:0;border:0!important;background:transparent!important;color:#fff;font-family:"Poppins",sans-serif;font-size:.92rem;padding:.7rem 0!important;margin:0!important;outline:0!important;box-shadow:none!important;-webkit-appearance:none;appearance:none}'
+        . '.store-search input::placeholder{color:#e8c493;opacity:.6}'
+        . '.store-search input::-webkit-search-cancel-button{display:none}'
+        . '.store-search-count{font-size:.72rem;color:#e8c493;opacity:.8;white-space:nowrap}'
+        . '.store-search-clear{border:0;background:rgba(246,200,121,.14);color:#f6c879;width:2rem;height:2rem;border-radius:50%;cursor:pointer;font-size:1.1rem;line-height:1;flex:0 0 auto}'
+        . '.store-search-clear:hover{background:rgba(246,200,121,.26)}'
+        . '.store-search [hidden],.store-no-results[hidden]{display:none!important}'
+        . '.is-filtered{display:none!important}'
+        . '.store-no-results{grid-column:1/-1;text-align:center;padding:2.5rem 1rem;color:#e8c493;font-size:.95rem}'
+        . '#store-grid-start{scroll-margin-top:5rem}'
+        . '</style>';
+    return $args;
+});
+
+$Wcms->addListener('js', static function (array $args): array {
+    $args[0] .= <<<'JS'
+<script>(function(){
+var input=document.getElementById("storeSearch");
+var grid=document.getElementById("store-grid-start");
+if(!input||!grid)return;
+var clearBtn=document.getElementById("storeSearchClear");
+var count=document.getElementById("storeSearchCount");
+var empty=document.getElementById("storeNoResults");
+var scrolled=false;
+function norm(s){return (s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");}
+function run(){
+  var terms=norm(input.value).split(/\s+/).filter(Boolean);
+  var searching=terms.length>0;
+  var shown=0,total=0,title=null,titleCount=0;
+  Array.prototype.forEach.call(grid.children,function(el){
+    if(el.classList.contains("store-category-title")){
+      if(title)title.classList.toggle("is-filtered",searching&&titleCount===0);
+      title=el;titleCount=0;return;
+    }
+    if(!el.classList.contains("store-product"))return;
+    total++;
+    var hay=norm(el.getAttribute("data-search"));
+    var match=terms.every(function(t){return hay.indexOf(t)!==-1;});
+    el.classList.toggle("is-filtered",!match);
+    if(match){shown++;titleCount++;}
+  });
+  if(title)title.classList.toggle("is-filtered",searching&&titleCount===0);
+  if(empty)empty.hidden=!(searching&&shown===0);
+  if(count)count.textContent=searching?shown+" of "+total:"";
+  if(clearBtn)clearBtn.hidden=!searching;
+  if(searching&&!scrolled){
+    scrolled=true;
+    if(grid.getBoundingClientRect().top>window.innerHeight*0.5)grid.scrollIntoView({behavior:"smooth",block:"start"});
+  }
+  if(!searching)scrolled=false;
+}
+input.addEventListener("input",run);
+input.addEventListener("keydown",function(e){
+  if(e.key==="Escape"){input.value="";run();}
+  if(e.key==="Enter"){e.preventDefault();grid.scrollIntoView({behavior:"smooth",block:"start"});}
+});
+if(clearBtn)clearBtn.addEventListener("click",function(){input.value="";run();input.focus();});
+})();</script>
+JS;
     return $args;
 });
 
